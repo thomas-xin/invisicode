@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "invisicode"
+version = "1.0.0"
+dependencies = [
+    "numpy>=2.2.6",
+]
+description = "Fast and efficient coding of binary data into non-breaking unicode whitespace"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "Thomas Xin", email = "thomasxin@gmail.com" }]
+license = { text = "Unlicense" }
+classifiers = ["Programming Language :: Python :: 3"]
