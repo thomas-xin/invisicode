@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "invisicode"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
     "numpy>=2.2.6",
 ]
@@ -14,3 +14,7 @@ requires-python = ">=3.8"
 authors = [{ name = "Thomas Xin", email = "thomasxin@gmail.com" }]
 license = { text = "Unlicense" }
 classifiers = ["Programming Language :: Python :: 3"]
+
+[project.urls]
+Homepage = "https://github.com/thomas-xin/invisicode"
+Repository = "https://github.com/thomas-xin/invisicode"
