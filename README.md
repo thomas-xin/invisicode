@@ -34,10 +34,13 @@ import invisicode
 import numpy as np
 data = np.random.randint(0, 256, size=10 ** 8, dtype=np.uint8)
 encoded = invisicode.encode(data) # '\U000e05b7\U000e0504\U000e02cc\U000e09a9\U000e0df5\U000e0066\U000e0d96󠅋\U000e0959\U000e0469...
+len(data), len(encoded) # (100000000, 66666667)
 assert invisicode.decode(encoded) == data.tobytes()
 ```
 
 ## Protocol
+- Note: All numbers are assumed to be little-endian.
+
 The encoding is performed as follows:
 - Each group of 3 bytes from the input is converted to two base-4096 numbers, by reinterpreting as a base-16777216 number and then splitting.
 - 0xE0000 is added to each resulting number, placing it in the [Tags and selector](https://en.wikipedia.org/wiki/Tags_%28Unicode_block%29) blocks, which will typically render as non-printable, non-breaking spaces.
