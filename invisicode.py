@@ -65,7 +65,7 @@ def decode(s: str, padding: int = PADDING) -> bytes:
 	else:
 		suffix = b""
 
-	invalid = buf < BASE | buf >= RANGE
+	invalid = (buf < BASE) | (buf >= BASE + RANGE)
 	if np.any(invalid):
 		raise InvisicodeDecodeError(f"Unexpected character {chr(buf[invalid][0])}")
 	ins = buf - BASE
