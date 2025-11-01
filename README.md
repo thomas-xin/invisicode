@@ -39,10 +39,11 @@ assert invisicode.decode(encoded) == data.tobytes()
 
 ## Protocol
 The encoding is performed as follows:
-- Each group of 3 bytes from the input is converted to two base-4096 numbers, by reinterpreting as a base-16777216 number and then splitting
+- Each group of 3 bytes from the input is converted to two base-4096 numbers, by reinterpreting as a base-16777216 number and then splitting.
 - 0xE0000 is added to each resulting number, placing it in the [Tags and selector](https://en.wikipedia.org/wiki/Tags_%28Unicode_block%29) blocks, which will typically render as non-printable, non-breaking spaces.
 - If there is a single trailing byte, it is encoded by itself by adding 0xE0000.
 - If there are two trailing bytes, they are encoded similarly, but with a padding character (default 0x1D17A) in between. This padding character may be customised if necessary.
+
 The decoding is performed as follows:
 - If there are an odd number of characters, there are trailing bytes present. Attempt to detect the padding character to determine whether one or two bytes should be extracted.
 - 0xE0000 is subtracted from remaining characters; this step should raise an exception if any would go below 0.
