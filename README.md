@@ -8,6 +8,9 @@ Originally a coding scheme designed for [Miza](https://github.com/thomas-xin/Miz
 
 Capable of encoding both byte-strings and text-strings, and distinguishing between the two, using an additional signifier character (0x1d17a).
 
+## Demo
+See https://thomas-xin.github.io/invisicode for an interactive demo of the encoding! You may use this to verify whether various examples of encoded text or data correctly render invisibly on your device or platform.
+
 ## Installation
 `pip install invisicode`
 
