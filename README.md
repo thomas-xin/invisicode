@@ -17,21 +17,36 @@ See https://thomas-xin.github.io/invisicode for an interactive demo of the encod
 ## Usage
 ```python
 encode(b: str | bytes | bytearray | memoryview | numpy.ndarray) -> str
-decode(s: str, expect: type = None) -> bytes | str
+    # Encode bytes or text into invisicode's private-use glyph sequence.
+decode(s: str | numpy.ndarray, expect: type = None, strict=True) -> bytes | str
+    # Decode an invisicode glyph sequence into bytes or text, enforcing optional type expectations.
+l128_encode(s: str) -> memoryview
+    # Encode a text string using variable-length base-128 encoding.
+l128_decode(b: bytes | bytearray | memoryview) -> str
+    # Decode bytes produced by l128_encode back into a Unicode string.
+is_invisicode(s: str | numpy.ndarray, strict: bool = True)
+    # Return whether a string or array contains only invisicode code points. In non-strict mode, allow strings containing any invisicode code points, as well as empty strings.
+detect(s: str | numpy.ndarray) -> numpy.ndarray
+    # Locate contiguous invisicode segments within the provided text.
+detect_and_decode(s: str | numpy.ndarray, expect: type = None) -> list
+    # Detect all invisicode substrings in the input and decode each one.
 ```
 ### Examples
+- Encoding and decoding regular binary data
 ```python
 import invisicode
 data = b"Hello World!"
 encoded = invisicode.encode(data) # '\U000e0548\U000e06c6\U000e0f6c\U000e0206\U000e0f57\U000e0726\U000e046c\U000e0216'
 assert invisicode.decode(encoded) == data # b"Hello World!"
 ```
+- Encoding and decoding a regular string
 ```python
 import invisicode
 data = "Hello World! ❤️"
 encoded = invisicode.encode(data) # '\U0001d17a\U000e0548\U000e06c6\U000e0f6c\U000e0206\U000e0f57\U000e0726\U000e046c\U000e0216\U000e0420\U000e04ee\U000e0c8f\U000e003f'
 assert invisicode.decode(encoded) == data # 'Hello World! ❤️'
 ```
+- Encoding and decoding a (relatively) large amount of binary data
 ```python
 import invisicode
 import numpy as np
@@ -43,8 +58,8 @@ assert invisicode.decode(encoded) == data.tobytes()
 - Invisicode exposes LEB128 encodings for strings, which is also internally used for slight coding efficiency improvements over UTF-8 (as we are reencoding the information anyway, the redundancy/error checking normally provided by UTF-8 is of no use to us).
 ```python
 import invisicode
-invisicode.l128_encode("test") # b'test'
-invisicode.l128_encode("Hello World! ❤️") # b'Hello World! \xe4N\x8f\xfc\x03'; 18 bytes vs 19 for utf-8
+invisicode.l128_encode("test") # memoryview(b'test')
+invisicode.l128_encode("Hello World! ❤️") # memoryview(b'Hello World! \xe4N\x8f\xfc\x03'); 18 bytes vs 19 for utf-8
 assert invisicode.l128_decode(invisicode.l128_encode("驈ꍬ啯ꍲᕤ")) == "驈ꍬ啯ꍲᕤ"
 ```
 

@@ -311,6 +311,55 @@ function bytesToHex(bytes) {
 	return parts.join(" ");
 }
 
+function isInvisicodeCodepoint(cp) {
+	return cp >= BASE && cp < BASE + RANGE;
+}
+
+function detectInvisicodeSegments(text) {
+	const codepoints = Array.from(text, char => char.codePointAt(0));
+	const segments = [];
+	for (let i = 0; i < codepoints.length;) {
+		const cp = codepoints[i];
+		if (cp === STRING_PREFIX && i + 1 < codepoints.length && isInvisicodeCodepoint(codepoints[i + 1])) {
+			const start = i;
+			i += 1;
+			while (i < codepoints.length && isInvisicodeCodepoint(codepoints[i])) {
+				i += 1;
+			}
+			segments.push({ start, end: i });
+			continue;
+		}
+		if (isInvisicodeCodepoint(cp)) {
+			const start = i;
+			while (i < codepoints.length && isInvisicodeCodepoint(codepoints[i])) {
+				i += 1;
+			}
+			segments.push({ start, end: i });
+			continue;
+		}
+		i += 1;
+	}
+	return { segments, codepoints };
+}
+
+function buildStringFromCodepoints(codepoints, start, end) {
+	const chars = [];
+	for (let i = start; i < end; i += 1) {
+		chars.push(String.fromCodePoint(codepoints[i]));
+	}
+	return chars.join("");
+}
+
+function escapeHTML(str) {
+	return str.replace(/[&<>"']/g, ch => ({
+		"&": "&amp;",
+		"<": "&lt;",
+		">": "&gt;",
+		"\"": "&quot;",
+		"'": "&#39;"
+	})[ch] || ch);
+}
+
 function showMessage(text, isError) {
 	const box = document.getElementById("status");
 	if (!text) {
@@ -356,21 +405,76 @@ function showSummary(html) {
 	});
 	document.getElementById("decode-btn").addEventListener("click", () => {
 		try {
-			let payload = encodedOutput.value;
-			if (payload && payload[0] == "X" && payload[payload.length - 1] == "Y") {
-				payload = payload.slice(1, -1);
+			const payload = encodedOutput.value;
+			const { segments, codepoints } = detectInvisicodeSegments(payload);
+			if (!segments.length) {
+				const decoded = decodeInvisicode(payload);
+				if (decoded.isString) {
+					plainMode.value = "text";
+					plainInput.value = decoded.text;
+					const charCount = Array.from(decoded.text).length;
+					showSummary(`Detected invisicode string → ${charCount} decoded characters.`);
+				} else {
+					plainMode.value = "hex";
+					plainInput.value = bytesToHex(decoded.bytes);
+					showSummary(`Decoded invisicode bytes → ${decoded.bytes.length} bytes.`);
+				}
+				showMessage("Decoding succeeded.", false);
+				return;
 			}
-			const decoded = decodeInvisicode(payload);
-			if (decoded.isString) {
+			const results = segments.map(segment => {
+				const fragment = buildStringFromCodepoints(codepoints, segment.start, segment.end);
+				return { segment, decoded: decodeInvisicode(fragment) };
+			});
+			const primary = results[0];
+			const coversEntireInput = segments.length === 1 && segments[0].start === 0 && segments[0].end === codepoints.length;
+			if (coversEntireInput) {
+				if (primary.decoded.isString) {
+					plainMode.value = "text";
+					plainInput.value = primary.decoded.text;
+					const charCount = Array.from(primary.decoded.text).length;
+					showSummary(`Detected invisicode string → ${charCount} decoded characters.`);
+				} else {
+					plainMode.value = "hex";
+					plainInput.value = bytesToHex(primary.decoded.bytes);
+					showSummary(`Decoded invisicode bytes → ${primary.decoded.bytes.length} bytes.`);
+				}
+				showMessage("Decoding succeeded.", false);
+				return;
+			}
+			if (primary.decoded.isString) {
 				plainMode.value = "text";
-				plainInput.value = decoded.text;
-				const charCount = Array.from(decoded.text).length;
-				showSummary(`Detected invisicode string → ${charCount} decoded characters.`);
+				plainInput.value = primary.decoded.text;
 			} else {
 				plainMode.value = "hex";
-				plainInput.value = bytesToHex(decoded.bytes);
-				showSummary(`Decoded invisicode bytes → ${decoded.bytes.length} bytes.`);
+				plainInput.value = bytesToHex(primary.decoded.bytes);
 			}
+			const listItems = results.map((res, index) => {
+				const { segment, decoded } = res;
+				const rangeLabel = `chars ${segment.start}–${segment.end - 1}`;
+				if (decoded.isString) {
+					const glyphs = Array.from(decoded.text);
+					const charCount = glyphs.length;
+					const previewGlyphs = glyphs.slice(0, 24);
+					let preview = escapeHTML(previewGlyphs.join(""));
+					if (previewGlyphs.length < glyphs.length) {
+						preview += " ...";
+					}
+					return `<li>Segment ${index + 1} (${rangeLabel}): string (${charCount} chars)${preview ? ` — <code>${preview}</code>` : ""}</li>`;
+				}
+				const bytes = decoded.bytes;
+				const byteCount = bytes.length;
+				let preview = "";
+				if (byteCount) {
+					const sample = bytes.slice(0, 16);
+					preview = bytesToHex(sample);
+					if (byteCount > 16) {
+						preview += " ...";
+					}
+				}
+				return `<li>Segment ${index + 1} (${rangeLabel}): bytes (${byteCount} bytes)${preview ? ` — <code>${escapeHTML(preview)}</code>` : ""}</li>`;
+			}).join("");
+			showSummary(`<p>Detected ${segments.length} invisicode segment${segments.length === 1 ? "" : "s"} inside the text. First result populated below.</p><ul>${listItems}</ul>`);
 			showMessage("Decoding succeeded.", false);
 		} catch (err) {
 			showMessage(err.message, true);

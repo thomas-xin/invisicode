@@ -6,6 +6,7 @@ import numpy as np
 from invisicode import (
 	u32_to_str, str_to_u32, leb128, decode_leb128,
 	l128_encode, l128_decode, encode, decode, is_invisicode,
+	detect_and_decode,
 	InvisicodeEncodeError, InvisicodeDecodeError
 )
 
@@ -112,7 +113,7 @@ class TestL128StringEncoding(unittest.TestCase):
 	def test_l128_encode_basic(self):
 		"""Test basic string encoding with LEB128."""
 		result = l128_encode("hello")
-		self.assertIsInstance(result, bytes)
+		self.assertIsInstance(result, memoryview)
 		self.assertGreater(len(result), 0)
 
 	def test_l128_encode_empty(self):
@@ -123,7 +124,7 @@ class TestL128StringEncoding(unittest.TestCase):
 	def test_l128_encode_unicode(self):
 		"""Test unicode string encoding."""
 		result = l128_encode("Hello 世界 🌍")
-		self.assertIsInstance(result, bytes)
+		self.assertIsInstance(result, memoryview)
 		self.assertGreater(len(result), 0)
 
 	def test_l128_decode_basic(self):
@@ -303,6 +304,27 @@ class TestInvisicodeEncodeDecode(unittest.TestCase):
 		with self.assertRaises(InvisicodeDecodeError):
 			decode(invalid_encoded)
 
+	def test_decode_allow_invalid(self):
+		"""Test decoding with invalid character but strict=False."""
+		# Create valid encoded string and insert invalid character in the middle
+		original = b"test"
+		valid_encoded = encode(original)
+		# Insert an invalid character after the first valid character
+		invalid_encoded = valid_encoded[0] + chr(0xd0000) + valid_encoded[1:]
+		valid_decoded = decode(invalid_encoded, strict=False)
+		self.assertEqual(valid_decoded, original)
+
+	def test_decode_multi(self):
+		"""Test detecting and decoding multiple encoded substrings, making sure each one maintains its original type."""
+		originals = ["test1", b"test2", "test3", b"test4"]
+		invalids = ["a", "bc", "def", "ghij", "klmno"]
+		s = ""
+		for x, y in zip(invalids, originals):
+			s += x
+			if y:
+				s += encode(y)
+		self.assertEqual(detect_and_decode(s), originals)
+
 	def test_roundtrip_bytes_various_lengths(self):
 		"""Test roundtrip encoding/decoding of bytes with various lengths."""
 		test_cases = [
@@ -379,9 +401,9 @@ class TestIsInvisicode(unittest.TestCase):
 		"""Test difference between strict and non-strict modes."""
 		# This test explores the behavior difference
 		# In strict mode, all characters must be in range
-		# In non-strict mode, behavior might differ
-		test_string = encode(b"test")
-		self.assertTrue(is_invisicode(test_string, strict=True))
+		# In non-strict mode, trailing characters may exist and be discarded
+		test_string = encode(b"test") + "test"
+		self.assertFalse(is_invisicode(test_string, strict=True))
 		self.assertTrue(is_invisicode(test_string, strict=False))
 
 

@@ -13,11 +13,19 @@ class InvisicodeDecodeError(ValueError):
 
 
 def u32_to_str(arr: np.ndarray) -> str:
+	"""Convert an array of UTF-32 code points into a Python string."""
 	enc = "utf-32-le"
 	return np.asanyarray(arr, dtype=np.uint32).tobytes().decode(enc)
 def str_to_u32(s: str) -> np.ndarray:
+	"""Encode a string into a NumPy array of UTF-32 little-endian code points."""
 	enc = "utf-32-le"
 	return np.frombuffer(s.encode(enc), dtype=np.uint32)
+
+def as_u32(s: str | np.ndarray) -> np.ndarray:
+	"""Return a UTF-32 view for either a string or an existing NumPy array."""
+	if isinstance(s, np.ndarray):
+		return s.view(np.uint32)
+	return str_to_u32(s)
 
 
 def leb128(n: int) -> bytearray:
@@ -53,7 +61,8 @@ def decode_leb128(data: bytes) -> tuple[int, bytes]:
 	return n, data[i + 1:]
 
 
-def l128_encode(s: str) -> bytes:
+def l128_encode(s: str) -> memoryview:
+	"""Encode a text string using variable-length base-128 encoding."""
 	if not s:
 		return b""
 	cp = str_to_u32(s)
@@ -92,9 +101,10 @@ def l128_encode(s: str) -> bytes:
 		out[pos] = low[mask3] | 0x80
 		out[pos + 1] = mid[mask3] | 0x80
 		out[pos + 2] = high[mask3]
-	return out.tobytes()
+	return out.data
 
-def l128_decode(b: bytes) -> str:
+def l128_decode(b: bytes | bytearray | memoryview) -> str:
+	"""Decode bytes produced by l128_encode back into a Unicode string."""
 	if not b:
 		return ""
 	data = np.frombuffer(b, dtype=np.uint8)
@@ -138,6 +148,7 @@ def l128_decode(b: bytes) -> str:
 
 
 def encode(b: str | bytes | bytearray | memoryview | np.ndarray) -> str:
+	"""Encode bytes or text into invisicode's private-use glyph sequence."""
 	if isinstance(b, str):
 		was_string = True
 		b = l128_encode(b)
@@ -174,8 +185,14 @@ def encode(b: str | bytes | bytearray | memoryview | np.ndarray) -> str:
 		return chr(STRINGPREFIX) + s
 	return s
 
-def decode(s: str, expect: type = None) -> bytes | str:
-	buf = str_to_u32(s)
+def decode(s: str | np.ndarray, expect: type = None, strict=True) -> bytes | str:
+	"""Decode an invisicode glyph sequence into bytes or text, enforcing optional type expectations."""
+	buf = as_u32(s)
+	if not strict:
+		while buf.size > 1 and not is_invisicode_codepoint(buf[-1], allow_prefixes=False):
+			buf = buf[:-1]
+		while buf.size and not is_invisicode_codepoint(buf[0]):
+			buf = buf[1:]
 	if buf.size and buf[0] == STRINGPREFIX:
 		if expect is bytes:
 			raise InvisicodeDecodeError("A string encoding was detected where a bytes output was expected.")
@@ -185,8 +202,12 @@ def decode(s: str, expect: type = None) -> bytes | str:
 		if expect is str:
 			raise InvisicodeDecodeError("A bytes encoding was detected where a string output was expected.")
 		was_string = False
-	while buf.size and (buf[-1] < BASE or buf[-1] >= BASE + RANGE):
-		buf = buf[:-1]
+
+	invalid = (buf < BASE) | (buf >= BASE + RANGE)
+	if invalid.any():
+		if strict:
+			raise InvisicodeDecodeError(f"Unexpected character {chr(buf[invalid][0])}")
+		buf = buf[np.logical_not(invalid, out=invalid)]
 
 	if buf.size & 1:
 		if buf.size >= 3 and buf[-1] == PADDING:
@@ -199,9 +220,6 @@ def decode(s: str, expect: type = None) -> bytes | str:
 	else:
 		suffix = b""
 
-	invalid = (buf < BASE) | (buf >= BASE + RANGE)
-	if np.any(invalid):
-		raise InvisicodeDecodeError(f"Unexpected character {chr(buf[invalid][0])}")
 	ins = buf - BASE
 	x, y = ins[::2], ins[1::2]
 	y <<= 12
@@ -216,19 +234,46 @@ def decode(s: str, expect: type = None) -> bytes | str:
 	return b
 
 
-def is_invisicode(s, strict=True):
+def is_invisicode_codepoint(c: int, allow_prefixes: bool = True):
+	"""Return whether a code point belongs to the invisicode range or allowed prefixes."""
+	if allow_prefixes and c == STRINGPREFIX:
+		return True
+	return BASE <= c < BASE + RANGE
+def is_invisicode(s: str | np.ndarray, strict: bool = True):
+	"""Return whether a string or array contains only invisicode code points. In non-strict mode, allow strings containing any invisicode code points, as well as empty strings."""
 	if not s:
 		return not strict
-	chars = list(s)
-	if ord(chars[0]) == STRINGPREFIX:
-		chars.pop(0)
+	if isinstance(s, np.ndarray):
+		buf = s.view(np.uint32)
+	else:
+		buf = str_to_u32(s)
 	if strict:
-		for c in chars:
-			if not (BASE <= ord(c) < BASE + RANGE):
-				return False
-		return True
-	for c in chars:
-		if not (BASE <= ord(c) < BASE + RANGE):
-			return False
-		return True
-	return True
+		if buf[0] == STRINGPREFIX:
+			buf = buf[1:]
+		invalid = (buf < BASE) | (buf >= BASE + RANGE)
+		return not invalid.any()
+	invalid = (buf < BASE) | (buf >= BASE + RANGE)
+	return not invalid.all()
+
+def detect(s: str | np.ndarray) -> np.ndarray:
+	"""Locate contiguous invisicode segments within the provided text."""
+	buf = as_u32(s)
+	invalid = (buf < BASE) | (buf >= BASE + RANGE)
+	padded_arr = np.concatenate([[False], np.logical_not(invalid, out=invalid), [False]])
+	diff = np.diff(padded_arr.astype(int))
+	starts = np.where(diff == 1)[0]
+	ends = np.where(diff == -1)[0]
+	mask = starts != 0
+	allowed = starts[mask]
+	is_string = buf[allowed - 1] == STRINGPREFIX
+	if is_string.any():
+		starts[mask & is_string] -= 1
+	return np.stack([starts, ends]).swapaxes(0, 1)
+def detect_and_decode(s: str | np.ndarray, expect: type = None) -> list:
+	"""Detect all invisicode substrings in the input and decode each one."""
+	buf = as_u32(s)
+	ranges = detect(buf)
+	out = []
+	for start, end in ranges:
+		out.append(decode(buf[start:end], expect=expect))
+	return out
