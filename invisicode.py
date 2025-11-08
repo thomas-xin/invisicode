@@ -76,8 +76,8 @@ def l128_encode(s: str) -> memoryview:
 	total_length = int(cp.size + ge_128_c + ge_16384_c)
 	out = np.empty(total_length, dtype=np.uint8)
 	size = cp.size
-	lengths = np.ones(size, dtype=np.uint8)
 
+	lengths = np.ones(size, dtype=np.uint8)
 	lengths[ge_128] = 2
 	lengths[ge_16384] = 3
 	lengths64 = lengths.astype(np.int64)
@@ -141,9 +141,6 @@ def l128_decode(b: bytes | bytearray | memoryview) -> str:
 		mid = data[idx + 1].astype(np.uint32)
 		high = data[idx + 2].astype(np.uint32)
 		cp[mask3] = ((data[idx] & 0x7F) | ((mid & 0x7F) << 7) | (high << 14))
-
-	if np.any(cp >= 0x110000):
-		raise UnicodeDecodeError("invisicode", b, 0, len(b), "Character out of range")
 	return u32_to_str(cp)
 
 
@@ -174,10 +171,10 @@ def encode(b: str | bytes | bytearray | memoryview | np.ndarray) -> str:
 	y, x = c >> 12, c & (RANGE - 1)
 	x |= BASE
 	y |= BASE
-	ids = np.empty(x.size * 2, dtype=x.dtype)
-	ids[::2] = x
-	ids[1::2] = y
-	s = u32_to_str(ids)
+	cp = np.empty(x.size * 2, dtype=x.dtype)
+	cp[::2] = x
+	cp[1::2] = y
+	s = u32_to_str(cp)
 
 	if suffix:
 		s += suffix
@@ -220,8 +217,8 @@ def decode(s: str | np.ndarray, expect: type = None, strict=True) -> bytes | str
 	else:
 		suffix = b""
 
-	ins = buf - BASE
-	x, y = ins[::2], ins[1::2]
+	b4096 = buf - BASE
+	x, y = b4096[::2], b4096[1::2]
 	y <<= 12
 	c = y | x
 	a = c.view(np.uint8).reshape((c.size, 4))[:, :-1].ravel()
