@@ -2,7 +2,7 @@
 
 Encodes arbitrary data into strings that display invisibly on devices and platforms supporting unicode.
 
-Operates in base 4096 with one additional padding character for specific input widths, meaning 1.5 bytes per character on average.
+Operates in base 4096, meaning 1.5 bytes per character on average. In practice the efficiency is marginally lower due to one or two padding characters required in specific cases, but this is negligible as the input size increases.
 
 Originally a coding scheme designed for [Miza](https://github.com/thomas-xin/Miza), as one of the methods to hide small amounts of persistent data in text messages to represent instructions for future edits to the message, while remaining visually undisruptive to users.
 

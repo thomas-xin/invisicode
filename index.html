@@ -724,7 +724,7 @@ function showSummary(html) {
 				if (decoded.isString) {
 					const glyphs = Array.from(decoded.text);
 					const charCount = glyphs.length;
-					const previewGlyphs = glyphs.slice(0, 24);
+					const previewGlyphs = glyphs.slice(0, 1024);
 					let preview = escapeHTML(previewGlyphs.join(""));
 					if (previewGlyphs.length < glyphs.length) {
 						preview += " ...";
@@ -735,9 +735,9 @@ function showSummary(html) {
 				const byteCount = bytes.length;
 				let preview = "";
 				if (byteCount) {
-					const sample = bytes.slice(0, 16);
+					const sample = bytes.slice(0, 256);
 					preview = bytesToHex(sample);
-					if (byteCount > 16) {
+					if (byteCount > 256) {
 						preview += " ...";
 					}
 				}
