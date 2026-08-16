@@ -4,18 +4,54 @@ build-backend = "hatchling.build"
 
 [project]
 name = "invisicode"
-version = "1.1.1"
+version = "1.2.1"
 dependencies = [
-    "numpy>=2.2.6",
+    "numpy>=1.24",
 ]
 description = "Fast and efficient coding of binary data into non-breaking unicode whitespace"
 readme = "README.md"
-requires-python = ">=3.8"
+# PEP 604 unions (`str | bytes`) are used in annotations; `from __future__ import
+# annotations` defers those, but match/typing usage still targets 3.9+.
+requires-python = ">=3.9"
 authors = [{ name = "Thomas Xin", email = "thomasxin@gmail.com" }]
-license = { text = "Unlicense" }
-classifiers = ["Programming Language :: Python :: 3"]
+license = "Unlicense"
+license-files = ["LICENSE"]
+keywords = ["unicode", "encoding", "steganography", "invisible", "base4096", "tags"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Text Processing",
+    "Topic :: Text Processing :: General",
+    "Topic :: Utilities",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "hypothesis>=6.100"]
 
 [project.urls]
 Homepage = "https://github.com/thomas-xin/invisicode"
 Repository = "https://github.com/thomas-xin/invisicode"
 Issues = "https://github.com/thomas-xin/invisicode/issues"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["invisicode.py"]
+
+[tool.hatch.build.targets.sdist]
+include = ["invisicode.py", "tests", "README.md", "LICENSE", "index.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Hypothesis profiles are registered in tests/conftest.py; override with
+# `pytest -p no:cacheprovider --hypothesis-profile=ci`.
+addopts = "--strict-markers --strict-config -ra"
+markers = [
+    "slow: long-running tests; deselect with `-m 'not slow'`",
+]

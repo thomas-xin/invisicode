@@ -1,15 +1,65 @@
+"""Encode arbitrary data into strings that render invisibly on Unicode-aware platforms.
+
+The payload alphabet contains the 4096 code points ``U+E0000`` to ``U+E0FFF``, classified ``Default_Ignorable_Code_Point`` in the Unicode standard (the assigned Tags and Variation Selectors Supplement characters directly, and the unassigned remainder via ``Other_Default_Ignorable_Code_Point``), meaning the majority of platforms will "correctly" display nothing.
+"""
+
+from __future__ import annotations
+
+from typing import overload
+
 import numpy as np
+
+__version__ = "1.2.1"
+
+__all__ = [
+	"BASE",
+	"RANGE",
+	"STRINGPREFIX",
+	"STRINGPREFIXES",
+	"PADDING",
+	"InvisicodeError",
+	"InvisicodeEncodeError",
+	"InvisicodeDecodeError",
+	"InvisicodeUnicodeDecodeError",
+	"u32_to_str",
+	"str_to_u32",
+	"as_u32",
+	"as_u8",
+	"leb128",
+	"decode_leb128",
+	"l128_encode",
+	"l128_decode",
+	"encode",
+	"decode",
+	"is_invisicode_codepoint",
+	"is_invisicode",
+	"detect",
+	"detect_and_decode",
+]
 
 BASE = 0xe0000
 RANGE = 0x1000
+# Code point emitted to mark a payload as text rather than bytes.
+# `U+1D17A` (MUSICAL SYMBOL END PHRASE) is `Cf`, default-ignorable and normalisation-stable under NFC/NFKC.
 STRINGPREFIX = 0x1d17a
+# Every code point accepted as a string marker when decoding. Emitting only
+# `STRINGPREFIX` while accepting this whole set allows the emitted prefix to be changed in future without invalidating existing payloads.
+STRINGPREFIXES = frozenset((STRINGPREFIX,))
 PADDING = BASE + RANGE - 1
 
 
-class InvisicodeEncodeError(ValueError):
-	pass
-class InvisicodeDecodeError(ValueError):
-	pass
+class InvisicodeError(ValueError):
+	"""Base class for every error raised by this module."""
+class InvisicodeEncodeError(InvisicodeError):
+	"""Raised when input cannot be encoded."""
+class InvisicodeDecodeError(InvisicodeError):
+	"""Raised when input cannot be decoded."""
+class InvisicodeUnicodeDecodeError(InvisicodeDecodeError, UnicodeDecodeError):
+	"""Malformed base-128 text payload.
+
+	Subclasses both :class:`InvisicodeDecodeError` and :class:`UnicodeDecodeError`
+	so that either may be caught, since a failure to decode text is both.
+	"""
 
 
 def u32_to_str(arr: np.ndarray) -> str:
@@ -22,10 +72,28 @@ def str_to_u32(s: str) -> np.ndarray:
 	return np.frombuffer(s.encode(enc), dtype=np.uint32)
 
 def as_u32(s: str | np.ndarray) -> np.ndarray:
-	"""Return a UTF-32 view for either a string or an existing NumPy array."""
+	"""Return a UTF-32 view for either a string or an existing NumPy array.
+
+	Arrays are made C-contiguous first, since ``ndarray.view`` cannot reinterpret
+	a strided buffer.
+	"""
 	if isinstance(s, np.ndarray):
-		return s.view(np.uint32)
+		return np.ascontiguousarray(s).view(np.uint32)
 	return str_to_u32(s)
+
+
+def as_u8(b: bytes | bytearray | memoryview | np.ndarray) -> np.ndarray:
+	"""Return a flat, C-contiguous ``uint8`` view of any bytes-like or array input.
+
+	Arrays of a wider dtype are reinterpreted as their underlying bytes, which
+	makes the little-endian byte order of the input significant.
+	"""
+	if isinstance(b, np.ndarray):
+		return np.ascontiguousarray(b).reshape(-1).view(np.uint8)
+	try:
+		return np.frombuffer(b, dtype=np.uint8)
+	except (TypeError, BufferError) as ex:
+		raise InvisicodeEncodeError(f"Cannot interpret {type(b).__name__} as bytes") from ex
 
 
 def leb128(n: int) -> bytearray:
@@ -46,8 +114,8 @@ def leb128(n: int) -> bytearray:
 			data[-1] |= 0x80
 		data.append(0)
 	return data
-def decode_leb128(data: bytes) -> tuple[int, bytes]:
-	"Decodes an integer from LEB128 encoded data; returns a tuple of decoded and remaining data."
+def decode_leb128(data: bytes | bytearray | memoryview) -> tuple[int, bytes | bytearray | memoryview]:
+	"Decodes an integer from LEB128 encoded data; returns a tuple of decoded and remaining data. The remaining data is a slice of the input, and so keeps the input's type."
 	i = n = 0
 	shift = 0
 	for i, byte in enumerate(data):
@@ -62,12 +130,13 @@ def decode_leb128(data: bytes) -> tuple[int, bytes]:
 
 
 def l128_encode(s: str) -> memoryview:
-	"""Encode a text string using variable-length base-128 encoding."""
-	if not s:
-		return b""
-	cp = str_to_u32(s)
+	"""Encode a text string using variable-length base-128 encoding.
+
+	Always returns a ``memoryview``, including for empty input.
+	"""
+	cp = str_to_u32(s) if s else np.empty(0, dtype=np.uint32)
 	if cp.size == 0:
-		return b""
+		return memoryview(b"")
 
 	ge_128 = cp >= 0x80
 	ge_16384 = cp >= 0x4000
@@ -104,16 +173,20 @@ def l128_encode(s: str) -> memoryview:
 	return out.data
 
 def l128_decode(b: bytes | bytearray | memoryview) -> str:
-	"""Decode bytes produced by l128_encode back into a Unicode string."""
+	"""Decode bytes produced by l128_encode back into a Unicode string.
+
+	Raises :class:`InvisicodeUnicodeDecodeError` (both an
+	:class:`InvisicodeDecodeError` and a :class:`UnicodeDecodeError`) on
+	malformed input.
+	"""
 	if not b:
 		return ""
 	data = np.frombuffer(b, dtype=np.uint8)
-	if not data.size:
-		return ""
 
 	termination_mask = (data & 0x80) == 0
 	if not termination_mask[-1]:
-		raise UnicodeDecodeError("invisicode", b, len(b) - 1, len(b), "Incomplete LEB128 sequence")
+		raw = bytes(b)
+		raise InvisicodeUnicodeDecodeError("invisicode", raw, len(raw) - 1, len(raw), "Incomplete LEB128 sequence")
 	ends = np.flatnonzero(termination_mask)
 	if data.size < 2 ** 32:
 		ends = ends.astype(np.uint32)
@@ -123,7 +196,8 @@ def l128_decode(b: bytes | bytearray | memoryview) -> str:
 		starts[1:] = ends[:-1] + 1
 	lengths = ends - starts + 1
 	if np.any((lengths < 1) | (lengths > 3)):
-		raise UnicodeDecodeError("invisicode", b, 0, len(b), "Invalid LEB128 codepoint length")
+		raw = bytes(b)
+		raise InvisicodeUnicodeDecodeError("invisicode", raw, 0, len(raw), "Invalid LEB128 codepoint length")
 
 	cp = np.empty(ends.size, dtype=np.uint32)
 	mask1 = lengths == 1
@@ -145,52 +219,79 @@ def l128_decode(b: bytes | bytearray | memoryview) -> str:
 
 
 def encode(b: str | bytes | bytearray | memoryview | np.ndarray) -> str:
-	"""Encode bytes or text into invisicode's private-use glyph sequence."""
+	"""Encode bytes or text into invisicode's invisible glyph sequence.
+
+	``str`` input is first converted with :func:`l128_encode` and marked with
+	:data:`STRINGPREFIX`, so that :func:`decode` can restore the original type.
+	NumPy arrays of any dtype are reinterpreted as their raw little-endian bytes.
+	"""
 	if isinstance(b, str):
 		was_string = True
-		b = l128_encode(b)
+		data = as_u8(l128_encode(b))
 	else:
 		was_string = False
-	try:
-		b = memoryview(b)
-	except TypeError:
-		b = memoryview(b.tobytes() if hasattr(b, "tobytes") else bytes(b))
+		data = as_u8(b)
 
-	excess = len(b) % 3
+	excess = data.size % 3
 	if excess:
-		b, end = b[:-excess], b[-excess:]
-	if excess == 1:
-		suffix = chr(end[0] | BASE)
-	elif excess == 2:
-		suffix = chr(end[0] | BASE) + chr(end[1] | BASE) + chr(PADDING)
+		body, end = data[:data.size - excess], data[data.size - excess:]
 	else:
-		suffix = ""
+		body, end = data, data[:0]
 
-	a = np.frombuffer(b, dtype=np.uint8).reshape((len(b) // 3, 3))
+	# Lay the prefix, body and suffix into one buffer so the result is built by a
+	# single decode rather than by repeated string concatenation.
+	prefix_len = 1 if was_string else 0
+	# One trailing byte costs one code point; two cost two plus a padding marker.
+	suffix_len = (0, 1, 3)[excess]
+	cp = np.empty(prefix_len + body.size // 3 * 2 + suffix_len, dtype=np.uint32)
+	if was_string:
+		cp[0] = STRINGPREFIX
+
+	a = body.reshape((body.size // 3, 3))
 	c = np.pad(a, ((0, 0), (0, 1)), constant_values=0).view(np.uint32).ravel()
 	y, x = c >> 12, c & (RANGE - 1)
 	x |= BASE
 	y |= BASE
-	cp = np.empty(x.size * 2, dtype=x.dtype)
-	cp[::2] = x
-	cp[1::2] = y
-	s = u32_to_str(cp)
+	body_end = prefix_len + x.size * 2
+	cp[prefix_len:body_end:2] = x
+	cp[prefix_len + 1:body_end:2] = y
 
-	if suffix:
-		s += suffix
-	if was_string:
-		return chr(STRINGPREFIX) + s
-	return s
+	if excess == 1:
+		cp[body_end] = int(end[0]) | BASE
+	elif excess == 2:
+		cp[body_end] = int(end[0]) | BASE
+		cp[body_end + 1] = int(end[1]) | BASE
+		cp[body_end + 2] = PADDING
+	return u32_to_str(cp)
 
-def decode(s: str | np.ndarray, expect: type = None, strict=True) -> bytes | str:
-	"""Decode an invisicode glyph sequence into bytes or text, enforcing optional type expectations."""
+@overload
+def decode(s: str | np.ndarray, expect: type[str], strict: bool = True) -> str: ...
+@overload
+def decode(s: str | np.ndarray, expect: type[bytes], strict: bool = True) -> bytes: ...
+@overload
+def decode(s: str | np.ndarray, expect: type | None = None, strict: bool = True) -> bytes | str: ...
+def decode(s: str | np.ndarray, expect: type | None = None, strict: bool = True) -> bytes | str:
+	"""Decode an invisicode glyph sequence into bytes or text.
+
+	:param expect: If ``str`` or ``bytes``, raise :class:`InvisicodeDecodeError`
+		when the payload's recorded type does not match. Leave as ``None`` to
+		accept whichever type was encoded.
+	:param strict: When ``True``, any code point outside the invisicode range
+		raises :class:`InvisicodeDecodeError`. When ``False``, surrounding and
+		interleaved foreign characters are stripped and decoding proceeds on
+		whatever remains; note that this can therefore return truncated or
+		meaningless output instead of reporting an error.
+	"""
 	buf = as_u32(s)
 	if not strict:
-		while buf.size > 1 and not is_invisicode_codepoint(buf[-1], allow_prefixes=False):
-			buf = buf[:-1]
 		while buf.size and not is_invisicode_codepoint(buf[0]):
 			buf = buf[1:]
-	if buf.size and buf[0] == STRINGPREFIX:
+		# Trim from the end, but never consume a leading string prefix: on its own
+		# it is the valid encoding of an empty string, and it is not payload.
+		floor = 1 if buf.size and int(buf[0]) in STRINGPREFIXES else 0
+		while buf.size > floor and not is_invisicode_codepoint(buf[-1], allow_prefixes=False):
+			buf = buf[:-1]
+	if buf.size and int(buf[0]) in STRINGPREFIXES:
 		if expect is bytes:
 			raise InvisicodeDecodeError("A string encoding was detected where a bytes output was expected.")
 		was_string = True
@@ -208,11 +309,17 @@ def decode(s: str | np.ndarray, expect: type = None, strict=True) -> bytes | str
 
 	if buf.size & 1:
 		if buf.size >= 3 and buf[-1] == PADDING:
-			first, second = buf[-2], buf[-3]
-			suffix = bytes([second - BASE, first - BASE])
+			first, second = int(buf[-2]) - BASE, int(buf[-3]) - BASE
+			if first > 0xFF or second > 0xFF:
+				raise InvisicodeDecodeError("Malformed two-byte trailing group")
+			suffix = bytes((second, first))
 			buf = buf[:-3]
 		else:
-			suffix = bytes([buf[-1] - BASE])
+			# A lone trailing byte can only ever have been widened from 0x00..0xFF.
+			last = int(buf[-1]) - BASE
+			if last > 0xFF:
+				raise InvisicodeDecodeError("Malformed single-byte trailing group")
+			suffix = bytes((last,))
 			buf = buf[:-1]
 	else:
 		suffix = b""
@@ -221,52 +328,92 @@ def decode(s: str | np.ndarray, expect: type = None, strict=True) -> bytes | str
 	x, y = b4096[::2], b4096[1::2]
 	y <<= 12
 	c = y | x
-	a = c.view(np.uint8).reshape((c.size, 4))[:, :-1].ravel()
-	b = a.tobytes()
-
+	# Drop the unused high byte of each uint32 straight into the output buffer,
+	# leaving room for the suffix so the result needs no further concatenation.
+	body_size = c.size * 3
+	out = np.empty(body_size + len(suffix), dtype=np.uint8)
+	out[:body_size].reshape((c.size, 3))[:] = c.view(np.uint8).reshape((c.size, 4))[:, :-1]
 	if suffix:
-		b += suffix
+		out[body_size:] = np.frombuffer(suffix, dtype=np.uint8)
+	b = out.tobytes()
+
 	if was_string:
 		return l128_decode(b)
 	return b
 
 
-def is_invisicode_codepoint(c: int, allow_prefixes: bool = True):
+def _is_prefix(buf: np.ndarray) -> np.ndarray:
+	"""Return a boolean mask of the positions in ``buf`` holding a string prefix."""
+	mask = np.zeros(buf.shape, dtype=bool)
+	for prefix in STRINGPREFIXES:
+		mask |= buf == prefix
+	return mask
+
+def is_invisicode_codepoint(c: int, allow_prefixes: bool = True) -> bool:
 	"""Return whether a code point belongs to the invisicode range or allowed prefixes."""
-	if allow_prefixes and c == STRINGPREFIX:
+	if allow_prefixes and int(c) in STRINGPREFIXES:
 		return True
 	return BASE <= c < BASE + RANGE
-def is_invisicode(s: str | np.ndarray, strict: bool = True):
-	"""Return whether a string or array contains only invisicode code points. In non-strict mode, allow strings containing any invisicode code points, as well as empty strings."""
-	if not s:
+def is_invisicode(s: str | np.ndarray, strict: bool = True) -> bool:
+	"""Return whether a string or array holds invisicode content.
+
+	:param strict: When ``True``, every code point (after an optional string
+		prefix) must lie in the invisicode range, and empty input is rejected.
+		When ``False``, return ``True`` if *any* code point is invisicode, and
+		accept empty input.
+	"""
+	buf = as_u32(s)
+	if not buf.size:
 		return not strict
-	if isinstance(s, np.ndarray):
-		buf = s.view(np.uint32)
-	else:
-		buf = str_to_u32(s)
-	if strict:
-		if buf[0] == STRINGPREFIX:
-			buf = buf[1:]
-		invalid = (buf < BASE) | (buf >= BASE + RANGE)
-		return not invalid.any()
+	if strict and int(buf[0]) in STRINGPREFIXES:
+		buf = buf[1:]
+		if not buf.size:
+			# A bare prefix is the valid encoding of an empty string.
+			return True
 	invalid = (buf < BASE) | (buf >= BASE + RANGE)
-	return not invalid.all()
+	if strict:
+		return not bool(invalid.any())
+	return not bool(invalid.all())
 
 def detect(s: str | np.ndarray) -> np.ndarray:
-	"""Locate contiguous invisicode segments within the provided text."""
+	"""Locate contiguous invisicode segments within the provided text.
+
+	Returns an ``(N, 2)`` array of ``[start, end)`` half-open index pairs, ready
+	to use as slice bounds. Where a segment is immediately preceded by a string
+	prefix, ``start`` is extended backwards by one to include it, so that
+	:func:`decode` can recover the payload's original type. A string prefix with
+	no payload after it is reported as a zero-length segment covering just the
+	prefix, since that is the valid encoding of an empty string.
+	"""
 	buf = as_u32(s)
 	invalid = (buf < BASE) | (buf >= BASE + RANGE)
-	padded_arr = np.concatenate([[False], np.logical_not(invalid, out=invalid), [False]])
-	diff = np.diff(padded_arr.astype(int))
-	starts = np.where(diff == 1)[0]
-	ends = np.where(diff == -1)[0]
-	mask = starts != 0
-	allowed = starts[mask]
-	is_string = buf[allowed - 1] == STRINGPREFIX
-	if is_string.any():
-		starts[mask & is_string] -= 1
+	valid = np.logical_not(invalid, out=invalid)
+	padded_arr = np.concatenate([[False], valid, [False]])
+	diff = np.diff(padded_arr.astype(np.int8))
+	starts = np.flatnonzero(diff == 1)
+	ends = np.flatnonzero(diff == -1)
+
+	prefixed = _is_prefix(buf)
+	# Shift all segments that start with a prefix
+	has_prefix = np.zeros(starts.shape, dtype=bool)
+	if starts.size:
+		shiftable = starts != 0
+		if shiftable.any():
+			has_prefix[shiftable] = prefixed[starts[shiftable] - 1]
+		starts[has_prefix] -= 1
+
+	# Lone prefix denotes empty text payload
+	lone = prefixed.copy()
+	if lone.size:
+		lone[:-1] &= np.logical_not(valid[1:])
+	lone_idx = np.flatnonzero(lone)
+	if lone_idx.size:
+		starts = np.concatenate([starts, lone_idx])
+		ends = np.concatenate([ends, lone_idx + 1])
+		order = np.argsort(starts, kind="stable")
+		starts, ends = starts[order], ends[order]
 	return np.stack([starts, ends]).swapaxes(0, 1)
-def detect_and_decode(s: str | np.ndarray, expect: type = None) -> list:
+def detect_and_decode(s: str | np.ndarray, expect: type | None = None) -> list[bytes | str]:
 	"""Detect all invisicode substrings in the input and decode each one."""
 	buf = as_u32(s)
 	ranges = detect(buf)
