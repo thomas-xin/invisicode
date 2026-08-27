@@ -204,8 +204,16 @@ button:disabled {
 <script>
 const BASE = 0xe0000;
 const RANGE = 0x1000;
+// Code point emitted to mark a payload as text rather than bytes.
 const STRING_PREFIX = 0x1d17a;
+// Every code point accepted as a string marker when decoding, so the emitted
+// prefix can change in future without invalidating existing payloads.
+const STRING_PREFIXES = new Set([STRING_PREFIX]);
 const PADDING = BASE + RANGE - 1;
+
+function isStringPrefix(cp) {
+	return STRING_PREFIXES.has(cp);
+}
 
 function leb128Encode(str) {
 	if (!str) {
@@ -229,110 +237,129 @@ function leb128Encode(str) {
 }
 
 function leb128Decode(bytes) {
-	const codepoints = [];
+	if (!bytes.length) {
+		return "";
+	}
+	if ((bytes[bytes.length - 1] & 0x80) !== 0) {
+		throw new Error("Incomplete LEB128 sequence.");
+	}
+	let result = "";
 	for (let i = 0; i < bytes.length;) {
 		const first = bytes[i++];
 		if ((first & 0x80) === 0) {
-			codepoints.push(first);
+			result += String.fromCodePoint(first);
 			continue;
-		}
-		if (i >= bytes.length) {
-			throw new Error("Incomplete LEB128 sequence.");
 		}
 		const second = bytes[i++];
 		if ((second & 0x80) === 0) {
-			const cp = (first & 0x7f) | (second << 7);
-			codepoints.push(cp);
+			result += String.fromCodePoint((first & 0x7f) | (second << 7));
 			continue;
 		}
-		if (i >= bytes.length) {
-			throw new Error("Incomplete LEB128 sequence.");
-		}
 		const third = bytes[i++];
+		if ((third & 0x80) !== 0) {
+			// A code point never needs more than three bytes in this format.
+			throw new Error("Invalid LEB128 codepoint length.");
+		}
 		const cp = (first & 0x7f) | ((second & 0x7f) << 7) | (third << 14);
-		if (cp >= 0x110000) {
+		if (cp > 0x10ffff) {
 			throw new Error("Decoded codepoint is out of range.");
 		}
-		codepoints.push(cp);
-	}
-	let result = "";
-	for (const cp of codepoints) {
 		result += String.fromCodePoint(cp);
 	}
 	return result;
 }
 
-function encodeInvisicode(dataBytes, treatAsString) {
-	let payload = dataBytes;
-	let prefix = "";
-	if (treatAsString) {
-		payload = leb128Encode(dataBytes);
-		prefix = String.fromCodePoint(STRING_PREFIX);
-	}
-		const remainder = payload.length % 3;
-		const full = payload.length - remainder;
-		const pieces = [];
+// Mirrors invisicode.encode: a string is LEB128-wrapped and prefixed, while a
+// Uint8Array is encoded as raw bytes.
+function encodeInvisicode(input) {
+	const treatAsString = typeof input === "string";
+	const payload = treatAsString ? leb128Encode(input) : input;
+	const prefix = treatAsString ? String.fromCodePoint(STRING_PREFIX) : "";
+	const remainder = payload.length % 3;
+	const full = payload.length - remainder;
+	const pieces = [];
 	for (let i = 0; i < full; i += 3) {
 		const chunk = payload[i] | (payload[i + 1] << 8) | (payload[i + 2] << 16);
 		const low = chunk & (RANGE - 1);
 		const high = chunk >>> 12;
-		pieces.push(String.fromCodePoint(BASE | low));
-		pieces.push(String.fromCodePoint(BASE | high));
+		pieces.push(String.fromCodePoint(BASE + low));
+		pieces.push(String.fromCodePoint(BASE + high));
 	}
-	let suffix = "";
 	if (remainder === 1) {
-		suffix = String.fromCodePoint(BASE | payload[full]);
+		pieces.push(String.fromCodePoint(BASE + payload[full]));
 	} else if (remainder === 2) {
-		suffix = String.fromCodePoint(BASE | payload[full]) +
-			String.fromCodePoint(BASE | payload[full + 1]) +
-			String.fromCodePoint(PADDING);
+		pieces.push(String.fromCodePoint(BASE + payload[full]));
+		pieces.push(String.fromCodePoint(BASE + payload[full + 1]));
+		pieces.push(String.fromCodePoint(PADDING));
 	}
-	return prefix + pieces.join("") + suffix;
+	return prefix + pieces.join("");
 }
 
-function decodeInvisicode(text) {
-	const codepoints = [];
-	for (const char of text) {
-		codepoints.push(char.codePointAt(0));
+// Mirrors invisicode.decode. With strict=false, foreign code points are
+// stripped instead of rejected, which can yield truncated output.
+function decodeInvisicode(text, strict = true) {
+	let codepoints = Array.from(text, char => char.codePointAt(0));
+	if (!strict) {
+		let start = 0;
+		while (start < codepoints.length && !isInvisicodeCodepoint(codepoints[start])) {
+			start += 1;
+		}
+		let end = codepoints.length;
+		// Never consume a leading string prefix: on its own it is the valid
+		// encoding of an empty string, and it is not payload.
+		const floor = start < end && isStringPrefix(codepoints[start]) ? start + 1 : start;
+		while (end > floor && !isInvisicodeCodepoint(codepoints[end - 1], false)) {
+			end -= 1;
+		}
+		codepoints = codepoints.slice(start, end);
 	}
 	let isString = false;
-	if (codepoints.length && codepoints[0] === STRING_PREFIX) {
+	if (codepoints.length && isStringPrefix(codepoints[0])) {
 		isString = true;
-		codepoints.shift();
+		codepoints = codepoints.slice(1);
 	}
-	while (codepoints.length && (codepoints[codepoints.length - 1] < BASE || codepoints[codepoints.length - 1] >= BASE + RANGE)) {
-		codepoints.pop();
+	if (strict) {
+		for (const cp of codepoints) {
+			if (!isInvisicodeCodepoint(cp, false)) {
+				throw new Error(`Unexpected character U+${cp.toString(16).toUpperCase().padStart(4, "0")}`);
+			}
+		}
+	} else {
+		codepoints = codepoints.filter(cp => isInvisicodeCodepoint(cp, false));
 	}
 	let suffix = [];
 	if (codepoints.length % 2 === 1) {
 		if (codepoints.length >= 3 && codepoints[codepoints.length - 1] === PADDING) {
-			const first = codepoints[codepoints.length - 2];
-			const second = codepoints[codepoints.length - 3];
-			suffix = [second - BASE, first - BASE];
-			codepoints.length -= 3;
+			const first = codepoints[codepoints.length - 2] - BASE;
+			const second = codepoints[codepoints.length - 3] - BASE;
+			if (first > 0xff || second > 0xff) {
+				throw new Error("Malformed two-byte trailing group.");
+			}
+			suffix = [second, first];
+			codepoints = codepoints.slice(0, -3);
 		} else {
-			const last = codepoints.pop();
-			suffix = [last - BASE];
+			// A lone trailing byte can only ever have been widened from 0x00..0xFF.
+			const last = codepoints[codepoints.length - 1] - BASE;
+			if (last > 0xff) {
+				throw new Error("Malformed single-byte trailing group.");
+			}
+			suffix = [last];
+			codepoints = codepoints.slice(0, -1);
 		}
 	}
-	const bytes = [];
+	const out = new Uint8Array(codepoints.length / 2 * 3 + suffix.length);
+	let o = 0;
 	for (let i = 0; i < codepoints.length; i += 2) {
 		const low = codepoints[i] - BASE;
 		const high = codepoints[i + 1] - BASE;
-		if (low < 0 || low >= RANGE || high < 0 || high >= RANGE) {
-			throw new Error("Character outside invisicode range detected.");
-		}
 		const chunk = (high << 12) | low;
-		bytes.push(chunk & 0xff);
-		bytes.push((chunk >> 8) & 0xff);
-		bytes.push((chunk >> 16) & 0xff);
+		out[o++] = chunk & 0xff;
+		out[o++] = (chunk >>> 8) & 0xff;
+		out[o++] = (chunk >>> 16) & 0xff;
 	}
-	if (suffix.length) {
-		for (const byte of suffix) {
-			bytes.push(byte & 0xff);
-		}
+	for (const byte of suffix) {
+		out[o++] = byte;
 	}
-	const out = new Uint8Array(bytes);
 	if (isString) {
 		return { isString: true, text: leb128Decode(out), bytes: out };
 	}
@@ -431,9 +458,6 @@ function detectFileMetadata(bytes) {
 	if (startsWith([0x3c, 0x3f, 0x78, 0x6d, 0x6c])) {
 		return { mime: "application/xml", extension: "xml", description: "XML document" };
 	}
-	if (startsWith([0x3c, 0x3f, 0x78, 0x6d, 0x6c])) {
-		return { mime: "application/xml", extension: "xml", description: "XML document" };
-	}
 	if (startsWith([0xef, 0xbb, 0xbf])) {
 		return { mime: "text/plain", extension: "txt", description: "UTF-8 text" };
 	}
@@ -457,31 +481,35 @@ function detectFileMetadata(bytes) {
 	return { mime: "application/octet-stream", extension: "bin", description: "Binary data" };
 }
 
-function isInvisicodeCodepoint(cp) {
+function isInvisicodeCodepoint(cp, allowPrefixes = true) {
+	if (allowPrefixes && isStringPrefix(cp)) {
+		return true;
+	}
 	return cp >= BASE && cp < BASE + RANGE;
 }
 
+// Mirrors invisicode.detect: contiguous runs of in-range code points, extended
+// backwards by one where they are immediately preceded by a string prefix. A
+// lone prefix is reported as its own segment, since that is the valid encoding
+// of an empty string.
 function detectInvisicodeSegments(text) {
 	const codepoints = Array.from(text, char => char.codePointAt(0));
+	const inRange = codepoints.map(cp => isInvisicodeCodepoint(cp, false));
 	const segments = [];
 	for (let i = 0; i < codepoints.length;) {
-		const cp = codepoints[i];
-		if (cp === STRING_PREFIX && i + 1 < codepoints.length && isInvisicodeCodepoint(codepoints[i + 1])) {
-			const start = i;
-			i += 1;
-			while (i < codepoints.length && isInvisicodeCodepoint(codepoints[i])) {
+		if (inRange[i]) {
+			let start = i;
+			while (i < codepoints.length && inRange[i]) {
 				i += 1;
+			}
+			if (start > 0 && isStringPrefix(codepoints[start - 1])) {
+				start -= 1;
 			}
 			segments.push({ start, end: i });
 			continue;
 		}
-		if (isInvisicodeCodepoint(cp)) {
-			const start = i;
-			while (i < codepoints.length && isInvisicodeCodepoint(codepoints[i])) {
-				i += 1;
-			}
-			segments.push({ start, end: i });
-			continue;
+		if (isStringPrefix(codepoints[i]) && !(i + 1 < codepoints.length && inRange[i + 1])) {
+			segments.push({ start: i, end: i + 1 });
 		}
 		i += 1;
 	}
@@ -638,9 +666,7 @@ function showSummary(html) {
 				raw = new Uint8Array(buffer);
 				summaryInfo = `Encoded file ${escapeHTML(file.name || "(unnamed)")} (${formatBytes(raw.length)})`;
 			}
-			const encoded = plainMode.value === "text" ?
-				encodeInvisicode(raw, true) :
-				encodeInvisicode(raw, false);
+			const encoded = encodeInvisicode(raw);
 			encodedOutput.value = encoded;
 			const visibleLength = Array.from(encoded).length;
 			summaryInfo += ` → ${visibleLength} invisicode glyphs.`;
@@ -655,30 +681,39 @@ function showSummary(html) {
 	document.getElementById("encode-btn").addEventListener("click", () => {
 		handleEncode();
 	});
+	// Populate the left-hand panel from a decode result, returning a short
+	// human-readable description of what was recovered.
+	function applyDecoded(decoded, downloadLabel) {
+		if (decoded.isString) {
+			plainMode.value = "text";
+			syncInputMode();
+			plainInput.value = decoded.text;
+			resetDownloadState();
+			return `string (${Array.from(decoded.text).length} chars)`;
+		}
+		plainMode.value = "file";
+		syncInputMode();
+		fileInfo.textContent = downloadLabel;
+		const meta = detectFileMetadata(decoded.bytes);
+		prepareDownload(decoded.bytes, meta);
+		const detail = meta.extension ? `${meta.description} (${meta.extension})` : meta.description;
+		return `${decoded.bytes.length} bytes (${detail})`;
+	}
+
 	document.getElementById("decode-btn").addEventListener("click", () => {
 		try {
 			const payload = encodedOutput.value;
 			const { segments, codepoints } = detectInvisicodeSegments(payload);
 			if (!segments.length) {
-				const decoded = decodeInvisicode(payload);
-				if (decoded.isString) {
-					plainMode.value = "text";
-					syncInputMode();
-					plainInput.value = decoded.text;
-					const charCount = Array.from(decoded.text).length;
-					showSummary(`Detected invisicode string → ${charCount} decoded characters.`);
-					resetDownloadState();
-				} else {
-					plainMode.value = "file";
-					syncInputMode();
-					fileInfo.textContent = "Decoded output ready for download.";
-					const meta = detectFileMetadata(decoded.bytes);
-					prepareDownload(decoded.bytes, meta);
-					const detail = meta.extension ? `${meta.description} (${meta.extension})` : meta.description;
-					showSummary(`Decoded invisicode bytes → ${decoded.bytes.length} bytes (${detail}).`);
+				// An empty bytes payload encodes to the empty string, so it can
+				// never be located by detection; treat it as the one valid case.
+				if (!codepoints.length) {
+					const summary = applyDecoded(decodeInvisicode(""), "Decoded output is empty.");
+					showSummary(`Decoded empty payload → ${summary}.`);
+					showMessage("Decoding succeeded.", false);
+					return;
 				}
-				showMessage("Decoding succeeded.", false);
-				return;
+				throw new Error("No invisicode content detected in the payload.");
 			}
 			const results = segments.map(segment => {
 				const fragment = buildStringFromCodepoints(codepoints, segment.start, segment.end);
@@ -687,37 +722,12 @@ function showSummary(html) {
 			const primary = results[0];
 			const coversEntireInput = segments.length === 1 && segments[0].start === 0 && segments[0].end === codepoints.length;
 			if (coversEntireInput) {
-				if (primary.decoded.isString) {
-					plainMode.value = "text";
-					syncInputMode();
-					plainInput.value = primary.decoded.text;
-					const charCount = Array.from(primary.decoded.text).length;
-					showSummary(`Detected invisicode string → ${charCount} decoded characters.`);
-					resetDownloadState();
-				} else {
-					plainMode.value = "file";
-					syncInputMode();
-					fileInfo.textContent = "Decoded output ready for download.";
-					const meta = detectFileMetadata(primary.decoded.bytes);
-					prepareDownload(primary.decoded.bytes, meta);
-					const detail = meta.extension ? `${meta.description} (${meta.extension})` : meta.description;
-					showSummary(`Decoded invisicode bytes → ${primary.decoded.bytes.length} bytes (${detail}).`);
-				}
+				const summary = applyDecoded(primary.decoded, "Decoded output ready for download.");
+				showSummary(`Decoded invisicode payload → ${summary}.`);
 				showMessage("Decoding succeeded.", false);
 				return;
 			}
-			if (primary.decoded.isString) {
-				plainMode.value = "text";
-				syncInputMode();
-				plainInput.value = primary.decoded.text;
-				resetDownloadState();
-			} else {
-				plainMode.value = "file";
-				syncInputMode();
-				fileInfo.textContent = "Primary segment ready for download.";
-				const meta = detectFileMetadata(primary.decoded.bytes);
-				prepareDownload(primary.decoded.bytes, meta);
-			}
+			applyDecoded(primary.decoded, "Primary segment ready for download.");
 			const listItems = results.map((res, index) => {
 				const { segment, decoded } = res;
 				const rangeLabel = `chars ${segment.start}–${segment.end - 1}`;
