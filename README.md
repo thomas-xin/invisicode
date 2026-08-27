@@ -2,7 +2,7 @@
 
 Encodes arbitrary data into strings that display invisibly on devices and platforms supporting unicode.
 
-Operates in base 4096, carrying 1.5 bytes of payload per code point — that is, 3 input bytes become 2 code points, so output length is ⅔ of input length. In practice the efficiency is marginally lower due to one or two padding characters required in specific cases, but this is negligible as the input size increases.
+Operates in base 4096, carrying 1.5 bytes of payload per code point, meaning every 3 input bytes become 2 code points, so the output length is on average ⅔ of input length. In practice the efficiency is marginally lower due to one or two padding characters required in specific cases, but this is negligible as the input size increases.
 
 Originally a coding scheme designed for [Miza](https://github.com/thomas-xin/Miza), as one of the methods to hide small amounts of persistent data in text messages to represent instructions for future edits to the message, while remaining visually undisruptive to users.
 
@@ -10,7 +10,7 @@ Capable of encoding both byte-strings and text-strings, and distinguishing betwe
 
 Note: NOT designed for [prompt-injecting LLMs](https://embracethered.com/blog/posts/2024/m365-copilot-prompt-injection-tool-invocation-and-data-exfil-using-ascii-smuggling/).
 
-### Why these code points render invisibly
+### Functionality
 The payload alphabet is the 4096 code points `U+E0000..U+E0FFF`. The entire range is `Default_Ignorable_Code_Point` in the Unicode standard — the assigned [Tags](https://en.wikipedia.org/wiki/Tags_%28Unicode_block%29) (`E0000..E007F`) and [Variation Selectors Supplement](https://en.wikipedia.org/wiki/Variation_Selectors_Supplement) (`E0100..E01EF`) characters directly, and the *unassigned* remainder (`E0080..E00FF`, `E01F0..E0FFF`) via `Other_Default_Ignorable_Code_Point`, which reserves them so that they remain ignorable if they are ever assigned. Conformant renderers are therefore expected to display none of it, rather than substituting `.notdef` boxes.
 
 In practice every modern web browser and social media platform tested renders the whole range as zero-width. Some older software that predates or ignores the default-ignorable property (notably Microsoft Office) will show `[?]` boxes for the unassigned portions. The [demo page](https://thomas-xin.github.io/invisicode) is the quickest way to check a given target.
@@ -183,7 +183,7 @@ pytest --cov=invisicode --cov-report=term-missing --cov-fail-under=100
 These are inherent to embedding a self-delimiting format in arbitrary text, and are covered by explicit tests so they cannot regress silently:
 - An empty *bytes* payload encodes to the empty string, so it cannot be located by `detect`. An empty *text* payload still leaves its prefix, and remains detectable.
 - If the carrier text happens to contain a prefix code point immediately before a bytes payload, `detect` will read that payload as text. Use `decode` on a known slice where the boundaries matter.
-- The padding code point `0xE0FFF` is an ordinary payload value and can occur mid-string. It is unambiguous regardless, because a body always contributes an even number of code points, so it is only interpreted as padding when the total length is odd.
+- The padding code point `0xE0FFF` is an ordinary payload value and can occur mid-string. It is unambiguous regardless, because a body always contributes an even number of code points, so it is only interpreted as padding when the total length is odd. However, this may lead to ambiguities when decoding concatenated payloads.
 
 ## Sample
 The text between the characters "X" and "Y" below may be decoded as invisicode. It contains 2173 invisible characters, and represents 3258 bytes of leb128-data that may then be further decoded into 2568 unicode characters. For comparison, UTF-8 would encode the same text as 3635 bytes.
