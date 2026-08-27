@@ -136,7 +136,7 @@ invisicode.decode(damaged) # raises InvisicodeDecodeError
 - Note: All numbers are encoded as little-endian bytes where applicable.
 
 The encoding is performed as follows:
-- If the input is a string, encode it as leb128 representation (slightly more space-efficient than utf-8), and start with a string prefix character 0x1d17a (MUSICAL SYMBOL END PHRASE — a `Cf` format character, default-ignorable, and outside the normal invisicode range). Decoders accept any code point in `STRINGPREFIXES` as this marker, so that the emitted prefix can change in future without invalidating existing payloads.
+- If the input is a string, encode it as leb128 representation (slightly more space-efficient than utf-8), and start with a string prefix character 0x1d17a (MUSICAL SYMBOL END PHRASE);  a `Cf` format character, default-ignorable, and outside the normal invisicode range. Decoders accept any code point in `STRINGPREFIXES` as this marker, so that the emitted prefix can change in future without invalidating existing payloads.
 - Each group of 3 bytes from the input is converted to two base-4096 numbers, by reinterpreting as a base-16777216 number and then splitting.
 - 0xE0000 is added to each resulting number, placing it in the [Tags](https://en.wikipedia.org/wiki/Tags_%28Unicode_block%29) block and the reserved default-ignorable range that follows it, which renders as non-printable, non-breaking space (see [above](#why-these-code-points-render-invisibly)).
 - If there is a single trailing byte (length % 3 == 1), it is encoded by itself by adding 0xE0000.
@@ -150,7 +150,7 @@ The decoding is performed as follows:
 - If necessary, convert the result back to a string.
 
 ## Development
-- Note: The entire test suite under /tests is AI-generated from the spec, and may be subject to change.
+- Note: The entire test suite under /tests, as well as the paragraph below, are AI-generated from the spec, and may be subject to change.
 ```
 pip install -e ".[test]"
 pytest                      # fast run, suitable for an edit/test loop
